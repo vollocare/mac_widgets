@@ -54,6 +54,8 @@ class SystemMonitor: ObservableObject {
     @Published var memoryUsage: String = "0 / 0 GB"  // 記憶體使用量，例如 "8.5 / 16.0 GB"
     @Published var diskUsage: String = "0 / 0 GB"    // 硬碟使用量，例如 "250 / 500 GB"
     @Published var diskFree: String = "0 GB"         // 硬碟剩餘空間，例如 "250 GB"
+    @Published var downloadSpeed: String = "0 B/s"   // 下載速度，例如 "1.5 MB/s"
+    @Published var uploadSpeed: String = "0 B/s"     // 上傳速度，例如 "256 KB/s"
     
     // ========================================================================
     // 【內部私有屬性】
@@ -66,9 +68,14 @@ class SystemMonitor: ObservableObject {
     // 儲存「上一次」的 CPU 使用資訊，用來計算兩次測量之間的變化
     // cpu_ticks 是一個包含 4 個數字的組合：(使用者模式, 系統模式, 閒置, 低優先度)
     private var previousInfo = host_cpu_load_info(cpu_ticks: (0, 0, 0, 0))
-    
+
     // 標記是否已經有「上一次」的資料（第一次執行時沒有）
     private var hasPreviousInfo = false
+
+    // 網路流量監控：儲存上一次的累計流量數據，用來計算網路速度
+    private var previousBytesIn: UInt64 = 0
+    private var previousBytesOut: UInt64 = 0
+    private var hasPreviousNetworkData = false
     
     // ========================================================================
     // 【初始化函式】- 建構子（Constructor）
@@ -117,6 +124,11 @@ class SystemMonitor: ObservableObject {
         // %.0f 代表不顯示小數（整數）
         self.diskUsage = String(format: "%.0f / %.0f GB", disk.used, disk.total)
         self.diskFree = String(format: "%.0f GB", disk.free)
+
+        // 更新網路速度
+        let networkSpeed = calculateNetworkSpeed()
+        self.downloadSpeed = formatSpeed(networkSpeed.downloadBytesPerSec)
+        self.uploadSpeed = formatSpeed(networkSpeed.uploadBytesPerSec)
     }
     
     // ========================================================================
@@ -315,5 +327,128 @@ class SystemMonitor: ObservableObject {
         
         // 如果取得資訊失敗，回傳全部為 0
         return (0, 0, 0)
+    }
+
+    // ========================================================================
+    // 【獲取網路流量函式】
+    // 使用 BSD 的 getifaddrs() 獲取所有網路介面的累計流量
+    //
+    // 【原理說明】
+    // 作業系統會記錄每個網路介面（如 WiFi、有線網路）的累計傳輸位元組數
+    // 我們遍歷所有介面，加總它們的流量
+    // ========================================================================
+    private func getNetworkBytes() -> (bytesIn: UInt64, bytesOut: UInt64) {
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+
+        // 呼叫系統 API 獲取網路介面列表
+        // getifaddrs() 會填充 ifaddr 指標，指向一個鏈結串列
+        guard getifaddrs(&ifaddr) == 0, let firstAddr = ifaddr else {
+            return (0, 0)
+        }
+
+        // defer：確保函式結束時釋放記憶體
+        defer { freeifaddrs(ifaddr) }
+
+        var totalBytesIn: UInt64 = 0
+        var totalBytesOut: UInt64 = 0
+
+        // 遍歷網路介面鏈結串列
+        var ptr = firstAddr
+        while true {
+            let interface = ptr.pointee
+            let name = String(cString: interface.ifa_name)
+
+            // 過濾條件：
+            // - en* 開頭：實體網路介面（en0 是 WiFi，en1+ 可能是有線網路）
+            // - pdp_ip* 開頭：行動網路介面
+            // - 排除 lo0（本地回環，只是自己跟自己通訊）
+            if name.hasPrefix("en") || name.hasPrefix("pdp_ip") {
+                // AF_LINK 代表這是鏈路層的資訊（包含流量統計）
+                if interface.ifa_addr.pointee.sa_family == UInt8(AF_LINK) {
+                    if let data = interface.ifa_data {
+                        // 將原始資料轉換為 if_data 結構
+                        let networkData = data.assumingMemoryBound(to: if_data.self).pointee
+                        // ifi_ibytes：輸入（下載）的位元組數
+                        totalBytesIn += UInt64(networkData.ifi_ibytes)
+                        // ifi_obytes：輸出（上傳）的位元組數
+                        totalBytesOut += UInt64(networkData.ifi_obytes)
+                    }
+                }
+            }
+
+            // 移動到下一個介面
+            guard let next = interface.ifa_next else { break }
+            ptr = next
+        }
+
+        return (totalBytesIn, totalBytesOut)
+    }
+
+    // ========================================================================
+    // 【計算網路速度函式】
+    // 比較兩次測量的累計流量差異，得到每秒的傳輸速度
+    //
+    // 【原理說明】
+    // 速度 = (現在的累計流量 - 上次的累計流量) / 時間間隔
+    // 因為 Timer 每 1 秒執行一次，所以差值就是「每秒的位元組數」
+    // ========================================================================
+    private func calculateNetworkSpeed() -> (downloadBytesPerSec: UInt64, uploadBytesPerSec: UInt64) {
+        let current = getNetworkBytes()
+
+        // 首次執行：沒有上一次的數據可以比較
+        if !hasPreviousNetworkData {
+            previousBytesIn = current.bytesIn
+            previousBytesOut = current.bytesOut
+            hasPreviousNetworkData = true
+            return (0, 0)
+        }
+
+        // 計算差值（處理可能的計數器溢位重置）
+        let downloadSpeed = current.bytesIn >= previousBytesIn
+            ? current.bytesIn - previousBytesIn
+            : 0
+
+        let uploadSpeed = current.bytesOut >= previousBytesOut
+            ? current.bytesOut - previousBytesOut
+            : 0
+
+        // 更新上一次的數據
+        previousBytesIn = current.bytesIn
+        previousBytesOut = current.bytesOut
+
+        return (downloadSpeed, uploadSpeed)
+    }
+
+    // ========================================================================
+    // 【速度格式化函式】
+    // 將位元組/秒轉換為人類可讀的格式
+    //
+    // 【單位說明】
+    // - B/s：位元組每秒（小於 1 KB 時使用）
+    // - KB/s：千位元組每秒（1 KB = 1024 B）
+    // - MB/s：百萬位元組每秒（1 MB = 1024 KB）
+    // - GB/s：十億位元組每秒（1 GB = 1024 MB）
+    // ========================================================================
+    private func formatSpeed(_ bytesPerSecond: UInt64) -> String {
+        let bytes = Double(bytesPerSecond)
+
+        let units = ["B/s", "KB/s", "MB/s", "GB/s"]
+        var value = bytes
+        var unitIndex = 0
+
+        // 每 1024 進一個單位
+        while value >= 1024 && unitIndex < units.count - 1 {
+            value /= 1024
+            unitIndex += 1
+        }
+
+        // 根據數值大小決定小數位數，讓顯示更整潔
+        if value < 10 {
+            return String(format: "%.2f %@", value, units[unitIndex])
+        } else if value < 100 {
+            return String(format: "%.1f %@", value, units[unitIndex])
+        } else {
+            return String(format: "%.0f %@", value, units[unitIndex])
+        }
     }
 }

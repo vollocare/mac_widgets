@@ -78,6 +78,14 @@ struct ContentView: View {
             // 顯示硬碟剩餘空間的那一列
             // icon: "arrow.down.circle" → 使用圓形向下箭頭圖示
             StatsRow(icon: "arrow.down.circle", label: "硬碟剩餘", value: monitor.diskFree)
+
+            // 顯示網路下載速度的那一列
+            // icon: "arrow.down.circle.fill" → 使用填充版圓形向下箭頭圖示
+            StatsRow(icon: "arrow.down.circle.fill", label: "下載速度", value: monitor.downloadSpeed)
+
+            // 顯示網路上傳速度的那一列
+            // icon: "arrow.up.circle.fill" → 使用填充版圓形向上箭頭圖示
+            StatsRow(icon: "arrow.up.circle.fill", label: "上傳速度", value: monitor.uploadSpeed)
         }
         // ====================================================================
         // 【修飾器鏈】- 修改視圖外觀的方法
