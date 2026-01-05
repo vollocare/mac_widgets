@@ -30,7 +30,7 @@ struct ContentView: View {
     // ========================================================================
     // 【狀態物件】
     // @StateObject 是一個特殊標記，代表這個變數的生命週期由 SwiftUI 管理
-    // 
+    //
     // 【為什麼需要 @StateObject？】
     // - 當 monitor 裡的資料改變時（例如 CPU 使用率更新）
     // - SwiftUI 會自動偵測到變化
@@ -40,6 +40,13 @@ struct ContentView: View {
     // private 代表這個變數只能在 ContentView 內部存取
     // ========================================================================
     @StateObject private var monitor = SystemMonitor()
+
+    // ========================================================================
+    // 【拖動狀態】
+    // 用於追蹤視窗拖動時的起始位置
+    // @State 是 SwiftUI 的狀態管理標記，當值改變時會觸發視圖更新
+    // ========================================================================
+    @State private var windowStartOrigin: CGPoint?
     
     // ========================================================================
     // 【body 屬性】- 視圖的主體
@@ -118,11 +125,52 @@ struct ContentView: View {
                 // lineWidth: 1 → 邊框寬度 1 點
                 .stroke(Color.white.opacity(0.2), lineWidth: 1)
         )
-        
+
+        // ====================================================================
+        // 【定義可交互區域】
+        // contentShape 定義了點擊、拖動等手勢的有效區域
+        // 這樣只有圓角矩形內部可以被點擊和拖動，外部的透明邊距不會響應
+        // ====================================================================
+        .contentShape(RoundedRectangle(cornerRadius: 16))
+
+        // ====================================================================
+        // 【拖動手勢】- 讓使用者可以拖動視窗
+        // 因為不使用 isMovableByWindowBackground，需要自己實現拖動功能
+        // ====================================================================
+        .gesture(
+            DragGesture()
+                .onChanged { gesture in
+                    // 取得當前視窗
+                    if let window = NSApplication.shared.windows.first {
+                        // 拖動開始時記錄視窗的起始位置
+                        if windowStartOrigin == nil {
+                            windowStartOrigin = window.frame.origin
+                        }
+
+                        // 根據起始位置和拖動偏移量計算新位置
+                        // gesture.translation 是相對於拖動起始點的累積偏移量
+                        if let startOrigin = windowStartOrigin {
+                            let newOrigin = CGPoint(
+                                x: startOrigin.x + gesture.translation.width,
+                                // macOS 的座標系 Y 軸向上為正，所以需要減去偏移量
+                                y: startOrigin.y - gesture.translation.height
+                            )
+                            // 設定視窗新位置
+                            window.setFrameOrigin(newOrigin)
+                        }
+                    }
+                }
+                .onEnded { _ in
+                    // 拖動結束時清除起始位置
+                    windowStartOrigin = nil
+                }
+        )
+
         // 外部邊距：在整個視圖外圍加入 10 點的空白
         // 這個空間可以用來顯示陰影或光暈效果
+        // 注意：放在 contentShape 和 gesture 之後，所以這個區域不會響應點擊和拖動
         .padding(10)
-        
+
         // ====================================================================
         // 【右鍵選單】- 讓使用者可以右鍵點擊來關閉應用程式
         // 因為這是一個背景程式（LSUIElement），不會出現在 Dock 中

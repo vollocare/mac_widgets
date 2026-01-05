@@ -135,10 +135,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // 讓標題列變透明（與前面的 .hiddenTitleBar 搭配）
             window.titlebarAppearsTransparent = true
             
-            // 允許透過拖曳視窗背景來移動視窗
-            // 通常只能拖曳標題列，設定這個後可以點擊視窗任何地方來移動
-            // 這對沒有標題列的視窗很重要
-            window.isMovableByWindowBackground = true
+            // 注意：不使用 isMovableByWindowBackground，因為會讓整個視窗區域（包括透明邊距）都可拖動
+            // 改用 SwiftUI 的拖動手勢來精確控制可拖動區域
+            // window.isMovableByWindowBackground = true
             
             // ================================================================
             // 【隱藏標準視窗按鈕】
